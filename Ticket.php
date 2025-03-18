@@ -364,7 +364,7 @@ if (get_included_files()[0]==__FILE__)
     // $printer->printBarcode("123456789012", 4);
 
     // Enviar a la impresora
-    $printer->printTicket(); // Supongamos que hay un método print() que envía los datos a la impresora
+    $printer->printTicket();
 
 
 }
