@@ -1,5 +1,10 @@
 <?php
+// ticket.php
+
 date_default_timezone_set("America/Argentina/San_juan");
+// from https://phpqrcode.sourceforge.net/
+require_once "../phpqrcode/qrlib.php";
+
 class Ticket{
     private string $printerName;
     private int $paperWidth;
@@ -111,7 +116,7 @@ class Ticket{
         $this->setCenterAlign();
         $this->strongStart();
         $this->duplicateCharSize();
-        $this->text.="Ticket de prueba sunset\n";
+        $this->text.="Texto de prueba\n";
         $this->normalCharSize();
         $this->strongFinish();
         $this->duplicateCharWidth();
@@ -126,6 +131,11 @@ class Ticket{
     public function addTotal(){
         $this->addSeparatorLine();
         $this->text.=str_pad("Total:",22) . str_pad("$".strval($this->total),10);
+    }
+    public function addRounding(float $rounding){
+        // $this->addSeparatorLine();
+        $this->total-=$rounding;
+        $this->text.=str_pad("Redondeo:",20) . str_pad("- $".strval($rounding),10);
     }
     public function crlf(){
         $this->text.="\n";
@@ -178,6 +188,10 @@ class Ticket{
         // sets off any duplication setting 
         $this->text.="\x1B\x21\x00";
     }
+    public function littleCharSize(){
+        // sets off any duplication setting 
+        $this->text.="\x1B\x4D\x01";
+    }
     
     public function printTicket(){
         $archivo = "ticket.txt";
@@ -186,24 +200,171 @@ class Ticket{
         copy($archivo, "//localhost/$this->printerName");
         unlink($archivo);
     }
+    public function printBarcode($data, $type = 4) {
+        /*
+        Tipos de códigos de barras compatibles:
+        - 0: UPC-A
+        - 1: UPC-E
+        - 2: JAN13 (EAN-13)
+        - 3: JAN8 (EAN-8)
+        - 4: CODE39
+        - 5: ITF
+        - 6: CODABAR
+        - 7: CODE93
+        - 8: CODE128
+        */
+        
+        $this->text .= "\x1D\x77\x02"; // Establece el ancho del código de barras
+        $this->text .= "\x1D\x68\x50"; // Establece la altura (80 píxeles)
+        $this->text .= "\x1D\x66\x01"; // Texto debajo del código de barras
+        
+        // Imprime el código de barras
+        $this->text .= "\x1D\x6B" . chr($type) . $data . "\x00";
+        
+        $this->crlf(); // Salto de línea
+    }
+    // now it works!!!
+    public function addImage($imagePath, $maxWidth = 384) {
+        // 1. Cargar la imagen según su tipo.
+        $info = getimagesize($imagePath);
+        if (!$info) {
+            throw new Exception("No se pudo obtener la información de la imagen.");
+        }
+        $mime = $info['mime'];
+        
+        switch ($mime) {
+            case 'image/png':
+                $img = imagecreatefrompng($imagePath);
+                break;
+            case 'image/jpeg':
+                $img = imagecreatefromjpeg($imagePath);
+                break;
+            default:
+                throw new Exception("Formato de imagen no soportado. Solo PNG y JPG están implementados.");
+        }
+        
+        // 2. Redimensionar la imagen si es necesario.
+        $width  = imagesx($img);
+        $height = imagesy($img);
+        
+        // Si la imagen supera el ancho máximo, se calcula el factor de escala
+        if ($width > $maxWidth) {
+            $ratio     = $maxWidth / $width;
+            $newWidth  = $maxWidth;
+            $newHeight = intval($height * $ratio);
+        } else {
+            $newWidth  = $width;
+            $newHeight = $height;
+        }
+        
+        // Es requisito que el ancho en píxeles sea múltiplo de 8. 
+        if ($newWidth % 8 !== 0) {
+            $newWidth = $newWidth - ($newWidth % 8);
+            // Ajustamos proporcionalmente la altura.
+            $newHeight = intval($newHeight * ($newWidth / $width));
+        }
+        
+        $resizedImg = imagecreatetruecolor($newWidth, $newHeight);
+        // Rellenar con fondo blanco.
+        $white = imagecolorallocate($resizedImg, 255, 255, 255);
+        imagefill($resizedImg, 0, 0, $white);
+        imagecopyresampled($resizedImg, $img, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+    
+        // 3. Convertir la imagen a blanco/negro.
+        // Recorrer cada píxel y aplicar umbral simple (por ejemplo, 128).
+        for ($y = 0; $y < $newHeight; $y++) {
+            for ($x = 0; $x < $newWidth; $x++) {
+                $rgb = imagecolorat($resizedImg, $x, $y);
+                $r = ($rgb >> 16) & 0xFF;
+                $g = ($rgb >> 8)  & 0xFF;
+                $b = $rgb & 0xFF;
+                // Umbral simple en la media.
+                $gray = ($r + $g + $b) / 3;
+                if ($gray < 128) {
+                    $color = imagecolorallocate($resizedImg, 0, 0, 0);
+                } else {
+                    $color = imagecolorallocate($resizedImg, 255, 255, 255);
+                }
+                imagesetpixel($resizedImg, $x, $y, $color);
+            }
+        }
+        
+        // 4. Generar los comandos ESC/POS para imprimir la imagen en modo ráster:
+        // El comando "GS v 0" tiene la siguiente estructura:
+        // [1D 76 30 m xL xH yL yH d...]
+        // m: modo (0 = densidad normal, 8-dot vertical)
+        //
+        // La imagen se envía como filas consecutivas donde cada byte representa 8 píxeles horizontales.
+        $widthBytes = $newWidth / 8; // ancho en bytes
+        $xL = $widthBytes & 0xFF;
+        $xH = ($widthBytes >> 8) & 0xFF;
+        $yL = $newHeight & 0xFF;
+        $yH = ($newHeight >> 8) & 0xFF;
+        
+        // Comando de cabecera.
+        $cmd  = chr(0x1D) . chr(0x76) . chr(0x30) . chr(0x00);
+        $cmd .= chr($xL) . chr($xH) . chr($yL) . chr($yH);
+        
+        // Convertir la imagen en datos binarios.
+        $data = "";
+        for ($y = 0; $y < $newHeight; $y++) {
+            for ($xByte = 0; $xByte < $widthBytes; $xByte++) {
+                $byte = 0;
+                // Cada byte representa 8 píxeles horizontales
+                for ($bit = 0; $bit < 8; $bit++) {
+                    $x = $xByte * 8 + $bit;
+                    // Obtenemos el color del píxel: asumimos 0 (negro) o 0xFFFFFF (blanco)
+                    $col = imagecolorat($resizedImg, $x, $y);
+                    // Comparamos: si es negro, encendemos el bit.
+                    if ($col == 0x000000) {
+                        $byte |= (1 << (7 - $bit));
+                    }
+                }
+                $data .= chr($byte);
+            }
+        }
+        
+        // Concatenamos el comando y el contenido de la imagen al texto del ticket.
+        $this->text .= $cmd . $data;
+        
+        // Liberar memoria.
+        imagedestroy($img);
+        imagedestroy($resizedImg);
+    }
+    
 
+    public function addText($text) {
+        $this->text.=$text;
+    }
+    public function addQR($text) {
+        $qrFile = $this->generateQRImage($text, "qrcode.png");
+        $this->addImage($qrFile);
+    }
+    public function generateQRImage($text, $filename = "qrcode.png", $errorCorrectionLevel = "L", $matrixPointSize = 8, $margin = 2) {
+        // La función QRcode::png permite especificar el nombre de archivo donde se guarda la imagen.
+        QRcode::png($text, $filename, $errorCorrectionLevel, $matrixPointSize, $margin);
+        return $filename;
+    }
+    
 
 }
 
 
 if (get_included_files()[0]==__FILE__)
 {
-    $ticket = new Ticket("Nictom IT01");
-    // $ticket->testHeader();
-    // $ticket->testProducts();
-    // my liqquor store's name
-    $ticket->setHeader("Sunset Drugstore");
-    $ticket->setTicketType(1);
-    $ticket->AddProduct("Fernet buhero",3,9350.50);
-    $ticket->AddProduct("Fernet branca 710",1,12000);
-    $ticket->AddProduct("CocaCola 2.25L Desc",4,3800);
-    $ticket->addTotal();
-    $ticket->printTicket();
+    $printer = new Ticket("Nictom IT01"); // Supposing that you named your printer like i did
+    $printer->setDefaultConfig();
+    $printer->setCenterAlign();
+    // $printer->littleCharSize();
+
+    $printer->addImage("logo.png");
+    $printer->addQR("https://instagram.com/sannntix_17");
+    // Imprimir Código de Barras
+    // $printer->printBarcode("123456789012", 4);
+
+    // Enviar a la impresora
+    $printer->printTicket(); // Supongamos que hay un método print() que envía los datos a la impresora
+
 
 }
 
