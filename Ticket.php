@@ -2,6 +2,7 @@
 // ticket.php
 
 date_default_timezone_set("America/Argentina/San_juan");
+
 // from https://phpqrcode.sourceforge.net/
 require_once "../phpqrcode/qrlib.php";
 
